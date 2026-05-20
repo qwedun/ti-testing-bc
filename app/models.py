@@ -78,10 +78,12 @@ class Question(Base):
 
     id = Column(String, primary_key=True)
     test_id = Column(Integer, ForeignKey("tests.id", ondelete="CASCADE"))
+    
 
     type = Column(String) 
     question = Column(Text)
     description = Column(Text, nullable=True)
+    image = Column(Text, nullable=True)
 
     ball = Column(Integer)
     is_half_ball = Column(Boolean, default=False)
@@ -99,7 +101,7 @@ class TestAssignment(Base):
     __tablename__ = "test_assignments"
 
     id = Column(Integer, primary_key=True)
-    test_id = Column(Integer, ForeignKey("tests.id"))
+    test_id = Column(Integer, ForeignKey("tests.id", ondelete="CASCADE"))
     student_id = Column(Integer, ForeignKey("users.id"))
     teacher_id = Column(Integer, ForeignKey("users.id"))
 
@@ -111,9 +113,10 @@ class CompletedTest(Base):
     __tablename__ = "completed_tests"
 
     id = Column(Integer, primary_key=True)
-    test_id = Column(Integer, ForeignKey("tests.id"))
+    test_id = Column(Integer, ForeignKey("tests.id", ondelete="CASCADE"))
     student_id = Column(Integer, ForeignKey("users.id"))
     completed_at = Column(DateTime(timezone=True), server_default=func.now())
+    answered_time = Column(Integer, nullable=True)  # время прохождения в секундах
     total_ball = Column(Integer)
     attempt_id = Column(Integer, ForeignKey("attempted_tests.id"), nullable=True)
     attempt = relationship("AttemptedTest")
@@ -129,7 +132,7 @@ class AttemptedTest(Base):
 
     id = Column(Integer, primary_key=True)
 
-    test_id = Column(Integer, ForeignKey("tests.id"))
+    test_id = Column(Integer, ForeignKey("tests.id", ondelete="CASCADE"))
     student_id = Column(Integer, ForeignKey("users.id"))
 
     started_at = Column(DateTime(timezone=True), server_default=func.now())

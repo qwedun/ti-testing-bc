@@ -9,6 +9,8 @@ from app.models import User
 from app.utilities import auth as auth_utils
 from pydantic import BaseModel
 
+SECRET_TEACHER_WORD = "ti2026"
+
 router = APIRouter(
     prefix="/auth",
     tags=["auth"]
@@ -42,6 +44,7 @@ class RegisterRequest(BaseModel):
     middle_name: str = ""
     group: str = ""
     role: str = "student"
+    secretWord: str | None = None
 
 
 @router.post("/register")
@@ -52,6 +55,7 @@ def register(payload: RegisterRequest, response: Response, db: Session = Depends
     surname = (payload.surname or "").strip()
     group = (payload.group or "").strip()
     middle_name = (payload.middle_name or "").strip() if payload.middle_name else None
+    secret = (payload.secretWord or "").strip() if payload.secretWord else None
 
     required_fields = {
         "login": login,
@@ -63,11 +67,32 @@ def register(payload: RegisterRequest, response: Response, db: Session = Depends
 
     for field_name, value in required_fields.items():
         if not value:
-            raise HTTPException(status_code=400, detail=f"Поле {field_name} обязательно для заполнения")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Поле {field_name} обязательно для заполнения"
+            )
+
+    # Проверка секретного слова для преподавателя
+    if payload.role == "teacher":
+        if not secret:
+            raise HTTPException(
+                status_code=400,
+                detail="Секретное слово обязательно для преподавателя"
+            )
+
+        if secret != SECRET_TEACHER_WORD:
+            raise HTTPException(
+                status_code=400,
+                detail="Неверное секретное слово"
+            )
 
     existing_user = db.query(User).filter(User.login == login).first()
+
     if existing_user:
-        raise HTTPException(status_code=400, detail="Пользователь с таким логином уже существует")
+        raise HTTPException(
+            status_code=400,
+            detail="Пользователь с таким логином уже существует"
+        )
 
     hashed_pw = auth_utils.hash_password(password)
 
@@ -80,9 +105,12 @@ def register(payload: RegisterRequest, response: Response, db: Session = Depends
         group=group,
         role=payload.role
     )
+
     db.add(user)
     db.commit()
     db.refresh(user)
+
+    return user
 
 # -----------------------
 # /login
