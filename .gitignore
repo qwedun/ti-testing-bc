@@ -2,3 +2,6 @@
 *__pycache__/
 *versions/
 *media/
+.env
+sv_key.pub
+sv_key

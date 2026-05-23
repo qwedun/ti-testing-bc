@@ -46,8 +46,8 @@ def extract_archive(archive_path: str, target_dir: str) -> None:
     lower = archive_path.lower()
 
     if lower.endswith(".zip"):
-        with zipfile.ZipFile(archive_path, "r") as zf:
-            zf.extractall(target_dir)
+        with zipfile.ZipFile(archive_path, mode="r") as zf:
+            zf.extractall(path=target_dir)
         return
 
     if lower.endswith(".7z"):

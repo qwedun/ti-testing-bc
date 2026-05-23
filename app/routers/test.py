@@ -218,6 +218,175 @@ async def create_test(
 
     return {"id": test.id}
 
+@router.put("/{test_id}")
+async def update_test(
+    test_id: int,
+    payload: str = Form(...),
+    question_images: list[UploadFile] = File(default=[]),
+    question_image_ids: list[str] = Form(default=[]),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        data = json.loads(payload)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Некорректный payload")
+
+    test = db.query(Test).filter(Test.id == test_id).first()
+
+    if not test:
+        raise HTTPException(status_code=404, detail="Test not found")
+
+    if current_user.role != "admin" and test.author_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Нет прав на редактирование этого теста"
+        )
+
+    # -------------------------
+    # ОБНОВЛЯЕМ ТЕСТ
+    # -------------------------
+    test.name = data.get("name")
+    test.description = data.get("description")
+    test.total_questions = int(data["totalQuestions"]) if data.get("totalQuestions") else None
+    test.questions_to_answer = int(data["questionsToAnswer"]) if data.get("questionsToAnswer") else None
+
+    test.shuffle_questions = data.get("shuffleQuestions", False)
+    test.hide_balls = data.get("hideBalls", False)
+    test.hide_results = data.get("hideResults", False)
+
+    test.attempts_count = int(data["attemptsCount"]) if data.get("attemptsCount") else None
+    test.timer = int(data["timer"]) if data.get("timer") else None
+
+    test.min_ball = int(data.get("minBall", 0))
+    test.avg_ball = int(data.get("avgBall", 0))
+    test.max_ball = int(data.get("maxBall", 0))
+
+    test.no_copy = data.get("noCopy", False)
+
+    # -------------------------
+    # ПЕРЕНАЗНАЧЕНИЕ ТЕСТА
+    # -------------------------
+    db.query(TestAssignment).filter(
+        TestAssignment.test_id == test.id
+    ).delete(synchronize_session=False)
+
+    students_ids = []
+
+    if data.get("toAll"):
+        test.is_public = True
+    else:
+        test.is_public = False
+
+        if data.get("students"):
+            students_ids = data["students"]
+
+        elif data.get("group"):
+            students_ids = [
+                s.id for s in db.query(User.id)
+                .filter(User.group == data["group"])
+                .filter(User.role == "student")
+                .all()
+            ]
+
+        if students_ids:
+            assignments = [
+                TestAssignment(
+                    test_id=test.id,
+                    student_id=student_id,
+                    teacher_id=current_user.id
+                )
+                for student_id in students_ids
+            ]
+            db.add_all(assignments)
+
+    # -------------------------
+    # УДАЛЯЕМ СТАРЫЕ ПОПЫТКИ И РЕЗУЛЬТАТЫ
+    # -------------------------
+    db.query(CompletedTest).filter(
+        CompletedTest.test_id == test.id
+    ).delete(synchronize_session=False)
+
+    db.query(AttemptedTest).filter(
+        AttemptedTest.test_id == test.id
+    ).delete(synchronize_session=False)
+
+    # -------------------------
+    # УДАЛЯЕМ СТАРЫЕ ВОПРОСЫ
+    # -------------------------
+    db.query(Question).filter(
+        Question.test_id == test.id
+    ).delete(synchronize_session=False)
+
+    # -------------------------
+    # КАРТИНКИ ВОПРОСОВ
+    # -------------------------
+    uploaded_images_map: dict[str, UploadFile] = {}
+
+    for idx, question_id in enumerate(question_image_ids):
+        if idx < len(question_images):
+            uploaded_images_map[question_id] = question_images[idx]
+
+    # -------------------------
+    # СОЗДАЁМ ВОПРОСЫ ЗАНОВО
+    # -------------------------
+    questions = []
+
+    for index, q in enumerate(data.get("questions", [])):
+        image_file_name = None
+
+        # 1. новая картинка
+        if q.get("id") in uploaded_images_map:
+            image_file_name = await save_uploaded_question_image(
+                uploaded_images_map[q["id"]],
+                test.id
+            )
+
+        # 2. временная картинка из import/preview
+        elif q.get("imageUrl"):
+            image_file_name = copy_tmp_image_to_test(q["imageUrl"], test.id)
+
+            # 3. если картинка уже принадлежит этому тесту
+            if image_file_name is None and f"/media/tests/{test.id}/" in q["imageUrl"]:
+                image_file_name = q["imageUrl"].split("/")[-1]
+
+        answers = []
+        correct_answers = []
+
+        if q["type"] == "text":
+            answers = q.get("answers", []) or []
+            correct_answers = q.get("correctAnswers", []) or []
+
+        elif q["type"] == "order":
+            correct_answers = q.get("correctAnswers", []) or []
+            answers = correct_answers[:]
+
+        elif q["type"] == "pair":
+            answers = None
+            correct_answers = q.get("correctAnswers", []) or []
+
+        question = Question(
+            id=str(uuid.uuid4()),
+            test_id=test.id,
+            type=q["type"],
+            question=q.get("question", ""),
+            description=q.get("description"),
+            is_multiple=q.get("isMultiple", False),
+            ball=int(q.get("ball", 1)),
+            is_half_ball=q.get("isHalfBall") or False,
+            index=index,
+            answers=answers,
+            correct_answers=correct_answers,
+            image=image_file_name,
+        )
+
+        questions.append(question)
+
+    db.add_all(questions)
+    db.commit()
+
+    return {"id": test.id, "status": "updated"}
+
 def build_attempts_label(attempts_used: int, attempts_total: int | None) -> str:
     if attempts_total is None:
         return ""
@@ -230,30 +399,50 @@ def build_attempts_label(attempts_used: int, attempts_total: int | None) -> str:
     return f"{remaining_attempts}/{attempts_total}"
 
 
-def serialize_test_with_attempts(base_row, completed_attempts):
-    attempts = [
-        {
+def get_attempt_max_ball(db: Session, attempt_id: int | None) -> int:
+    if attempt_id is None:
+        return 0
+
+    attempt = db.query(AttemptedTest).filter(
+        AttemptedTest.id == attempt_id
+    ).first()
+
+    if not attempt or not attempt.questions:
+        return 0
+
+    max_ball = (
+        db.query(func.coalesce(func.sum(Question.ball), 0))
+        .filter(Question.id.in_(attempt.questions))
+        .scalar()
+    )
+
+    return int(max_ball or 0)
+
+
+def serialize_test_with_attempts(base_row, completed_attempts, db: Session):
+    completed_attempts = sorted(
+        completed_attempts,
+        key=lambda x: (
+            -(x.total_ball if x.total_ball is not None else 0),
+            -(x.completed_at.timestamp() if x.completed_at else 0)
+        )
+    )
+
+    attempts = []
+
+    for a in completed_attempts:
+        attempt_max_ball = get_attempt_max_ball(db, a.attempt_id)
+
+        attempts.append({
             "id": a.id,
             "attempt_id": a.attempt_id,
             "completed_at": a.completed_at,
             "total_ball": a.total_ball,
-            "answered_time": a.answered_time
-        }
-        for a in completed_attempts
-    ]
+            "max_ball": attempt_max_ball,
+            "answered_time": a.answered_time,
+        })
 
-    best_result = None
-    if completed_attempts:
-        best = max(
-            completed_attempts,
-            key=lambda x: x.total_ball if x.total_ball is not None else 0
-        )
-        best_result = {
-            "id": best.id,
-            "attempt_id": best.attempt_id,
-            "completed_at": best.completed_at,
-            "total_ball": best.total_ball,
-        }
+    best_result = attempts[0] if attempts else None
 
     attempts_used = len(completed_attempts)
     attempts_label = build_attempts_label(attempts_used, base_row.attempts_count)
@@ -339,7 +528,8 @@ def get_public_tests(
     return [
         serialize_test_with_attempts(
             t,
-            completed_by_test.get(t.id, [])
+            completed_by_test.get(t.id, []),
+            db
         )
         for t in tests_with_counts
     ]
@@ -404,7 +594,8 @@ def get_assigned_tests(
     return [
         serialize_test_with_attempts(
             t,
-            completed_by_test.get(t.id, [])
+            completed_by_test.get(t.id, []),
+            db
         )
         for t in tests_with_counts
     ]
@@ -830,7 +1021,8 @@ def search_tests(
     return [
         serialize_test_with_attempts(
             t,
-            completed_by_test.get(t.id, [])
+            completed_by_test.get(t.id, []),
+            db
         )
         for t in tests_with_counts
     ]
@@ -894,6 +1086,7 @@ def get_test(
             "shuffleQuestions": test.shuffle_questions,
             "noCopy": test.no_copy,
             "teacher": teacher_data,
+            "questions_to_answer": test.questions_to_answer,
             "questions": []
         }
 
@@ -930,6 +1123,8 @@ def get_test(
             "max_ball": test.max_ball,
             "total_ball": None,
             "max_possible_ball": max_possible_ball,
+            "timer": test.timer,
+            "questions_to_answer": test.questions_to_answer,
             "hideBalls": test.hide_balls,
             "hideResults": test.hide_results,
             "shuffleQuestions": test.shuffle_questions,
@@ -1327,6 +1522,25 @@ def submit_test(
         "questions": questions_result,        
     }
 
+def get_attempt_max_ball(db: Session, attempt_id: int | None) -> int:
+    if attempt_id is None:
+        return 0
+
+    attempt = db.query(AttemptedTest).filter(
+        AttemptedTest.id == attempt_id
+    ).first()
+
+    if not attempt or not attempt.questions:
+        return 0
+
+    max_ball = (
+        db.query(func.coalesce(func.sum(Question.ball), 0))
+        .filter(Question.id.in_(attempt.questions))
+        .scalar()
+    )
+
+    return int(max_ball or 0)
+
 @router.get("/{test_id}/results")
 def get_test_results(
     test_id: int,
@@ -1407,6 +1621,7 @@ def get_test_results(
             "attempt_id": row.attempt_id,
             "completed_at": row.completed_at,
             "total_ball": row.total_ball,
+            "max_ball": get_attempt_max_ball(db, row.attempt_id),
             "answered_time": row.answered_time,
         })
 

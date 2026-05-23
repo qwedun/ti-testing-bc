@@ -7,21 +7,17 @@ from .models import Base
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import auth, test, user
 from fastapi.staticfiles import StaticFiles
-
+import os
 BASE_DIR = Path(__file__).resolve().parent.parent
 MEDIA_DIR = BASE_DIR / "media"
 
+frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 origins = [
+    frontend_url,
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "http://localhost:4173",
 ]
-
-print("BASE_DIR =", BASE_DIR)
-print("MEDIA_DIR =", MEDIA_DIR)
-print("MEDIA EXISTS =", MEDIA_DIR.exists())
-print("Q1 EXISTS =", (MEDIA_DIR / "tests" / "23" / "Q1P.bmp").exists())
 
 app = FastAPI()
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
