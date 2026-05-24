@@ -488,7 +488,9 @@ def get_public_tests(
         .outerjoin(Test.questions)
     )
 
-    if user.role != "teacher":
+    if user.role == "teacher":
+        query = query.filter(Test.author_id == user.id)
+    else:
         query = query.filter(Test.is_public == True)
 
     tests_with_counts = (

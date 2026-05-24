@@ -62,8 +62,11 @@ def register(payload: RegisterRequest, response: Response, db: Session = Depends
         "password": password,
         "name": name,
         "surname": surname,
-        "group": group,
     }
+
+    # группа обязательна только для студента
+    if payload.role == "student":
+        required_fields["group"] = group
 
     for field_name, value in required_fields.items():
         if not value:
@@ -102,7 +105,7 @@ def register(payload: RegisterRequest, response: Response, db: Session = Depends
         name=name,
         surname=surname,
         middle_name=middle_name,
-        group=group,
+        group=group if payload.role == "student" else None,
         role=payload.role
     )
 
